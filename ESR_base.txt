@@ -1,1 +1,187 @@
-ESR config...
+#!/usr/bin/clish
+#232
+#1.23.6
+#27/05/2024
+#19:01:01
+hostname esr-2
+
+object-group service dhcp_client
+  port-range 68
+exit
+object-group service dhcp_server
+  port-range 67
+exit
+object-group service dns
+  port-range 53
+exit
+object-group service ntp
+  port-range 123
+exit
+object-group service ssh
+  port-range 22
+exit
+
+syslog max-files 3
+syslog file-size 512
+syslog file tmpsys:syslog/default
+  severity info
+exit
+
+username admin
+  password encrypted $6$oKulhSsjU1G5iJ3w$K9keGlnPUTojUb9qP3OePIxzqCFzVq.rrsOvZTRy5ALff367tMOe8tesRYS6ogObmj.naS387/WAE/Kdifqhh/
+exit
+
+boot host auto-config
+boot host auto-update
+
+vlan 2
+exit
+
+no spanning-tree
+
+domain lookup enable
+
+security zone trusted
+exit
+security zone untrusted
+exit
+
+router isis 2
+  is-type level-1
+  net 49.0010.0020.0200.2002.00
+  redistribute connected
+  enable
+exit
+
+bridge 1
+  vlan 1
+  security-zone trusted
+  ip address 192.168.1.1/24
+  no spanning-tree
+  enable
+exit
+bridge 2
+  vlan 2
+  security-zone untrusted
+  ip address dhcp
+  no spanning-tree
+  enable
+exit
+
+interface gigabitethernet 1/0/1
+  mode switchport
+  switchport access vlan 2
+exit
+interface gigabitethernet 1/0/2
+  mode routerport
+  ip firewall disable
+  ip address 192.168.2.2/24
+  isis instance 2
+  isis enable
+exit
+interface gigabitethernet 1/0/3
+  mode routerport
+  isis instance 2
+  isis enable
+exit
+interface gigabitethernet 1/0/3.3
+  ip firewall disable
+  ip address 192.168.6.10/24
+exit
+interface gigabitethernet 1/0/3.4
+exit
+interface gigabitethernet 1/0/4
+  mode switchport
+exit
+interface loopback 1
+  ip address 2.2.2.2/32
+  isis instance 2
+  isis enable
+exit
+
+security zone-pair trusted self
+  rule 10
+    action permit
+    match protocol tcp
+    match destination-port object-group ssh
+    enable
+  exit
+  rule 20
+    action permit
+    match protocol icmp
+    enable
+  exit
+  rule 30
+    action permit
+    match protocol udp
+    match source-port object-group dhcp_client
+    match destination-port object-group dhcp_server
+    enable
+  exit
+  rule 40
+    action permit
+    match protocol udp
+    match destination-port object-group ntp
+    enable
+  exit
+  rule 50
+    action permit
+    match protocol tcp
+    match destination-port object-group dns
+    enable
+  exit
+  rule 60
+    action permit
+    match protocol udp
+    match destination-port object-group dns
+    enable
+  exit
+exit
+security zone-pair trusted trusted
+  rule 1
+    action permit
+    enable
+  exit
+exit
+security zone-pair trusted untrusted
+  rule 1
+    action permit
+    enable
+  exit
+exit
+security zone-pair untrusted self
+  rule 1
+    action permit
+    match protocol udp
+    match source-port object-group dhcp_server
+    match destination-port object-group dhcp_client
+    enable
+  exit
+exit
+
+security passwords default-expired
+
+nat source
+  ruleset factory
+    to zone untrusted
+    rule 10
+      description "ONLY first"
+      action source-nat interface
+      enable
+    exit
+  exit
+exit
+
+ip dhcp-server
+ip dhcp-server pool lan-pool
+  network 192.168.1.0/24
+  address-range 192.168.1.2-192.168.1.254
+  default-router 192.168.1.1
+  dns-server 192.168.1.1
+exit
+
+ip ssh server
+
+ntp enable
+ntp broadcast-client enable
+

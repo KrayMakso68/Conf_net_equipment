@@ -12,7 +12,7 @@ settings = {
         "username": "admin",
         "password": "admin",
         "secret": "",
-        "device_type": "eltex",  # Для ESR (SSH)
+        "device_type": "eltex_esr_ssh",  # Для ESR (SSH)
     },
     "MES": {
         "host": "192.168.1.239",
@@ -159,13 +159,13 @@ class ConfigApp:
 
     def factory_reset(self, device):
         # Команда сброса к заводским настройкам
-        factory_command = ["reset configuration factory-default"]
+        factory_command = ["end", "cop system:fa system:ca"]
         self.run_commands(device, factory_command)
 
     def upload_config(self, device):
         # Загрузка пользовательской конфигурации
         file_path = filedialog.askopenfilename(title="Выберите файл конфигурации",
-                                               filetypes=[("Текстовые файлы", "*.txt")])
+                                               filetypes=[])
         if file_path:
             try:
                 with open(file_path, "r") as file:
@@ -179,62 +179,117 @@ class ConfigApp:
             output_window = tk.Toplevel(self.root)
             output_window.title("Результаты выполнения")
 
-            output_area = scrolledtext.ScrolledText(output_window, width=80, height=20,
-                                                    state="disabled")  # Только для чтения
+            output_area = scrolledtext.ScrolledText(output_window, width=80, height=20, state="disabled")
             output_area.pack(padx=10, pady=10)
 
             try:
-                connection = ConnectHandler(**settings[device])
-                if settings[device]["secret"]:
-                    connection.enable()
+                conn_params = settings[device]
+                connection = ConnectHandler(**conn_params)
 
-                # Выводим статус подключения
-                output_area.config(state="normal")  # Временно разрешаем редактирование
-                output_area.insert(tk.END, f"Подключение к {settings[device]['host']}...\n")
-                output_area.config(state="disabled")  # Снова отключаем редактирование
+                # Устанавливаем корректный ожидаемый шаблон для режима конфигурации
+                config_prompt = r"(config)#" if device == "MES" else r"(config)"
 
-                # Выполняем команды
+                # Обработка ESR
+                if device == "ESR":
+                    output_area.config(state="normal")
+                    output_area.insert(tk.END, f"Подключение к {conn_params['host']} (ESR)...\n")
+                    output_area.see(tk.END)
+                    output_area.config(state="disabled")
+
+                    # # Проверяем, требуется ли смена пароля
+                    # prompt = connection.find_prompt()
+                    # if "change-expired-password" in prompt:
+                    #     output_area.config(state="normal")
+                    #     output_area.insert(tk.END, "Требуется смена пароля. Меняем на 'admin'. Выполняем...\n")
+                    #     output_area.see(tk.END)
+                    #     output_area.config(state="disabled")
+                    #
+                    #     # Смена пароля
+                    #     connection.send_command("password admin", expect_string=r"#", read_timeout=30)
+                    #     output_area.config(state="normal")
+                    #     output_area.insert(tk.END, f"Пароль изменён!\n")
+                    #     output_area.see(tk.END)
+                    #     output_area.config(state="disabled")
+                    #
+                    # connection.send_command("commit")
+                    # connection.send_command("confirm")
+
+                    connection.config_mode(config_command="configure terminal", pattern=r"#")
+
+                # Обработка MES
+                elif device == "MES":
+
+                    output_area.config(state="normal")
+                    output_area.insert(tk.END, f"Подключение к {conn_params['host']} (MES)...\n")
+                    output_area.see(tk.END)
+                    output_area.config(state="disabled")
+
+                    # Ожидаем "User Name:" и "Password:"
+                    connection.telnet_login(
+                        username=conn_params["username"],
+                        password=conn_params["password"],
+                        read_timeout=15,
+                        expect_string=r"console#"
+                    )
+                    # Переход в режим конфигурации
+                    connection.config_mode(config_command="configure", pattern=config_prompt)
+
+                # Выполнение команд
                 for command in commands:
-                    result = connection.send_command(command.strip())
+                    result = connection.send_command(command.strip(), expect_string=r"#", read_timeout=30)
                     output_area.config(state="normal")
                     output_area.insert(tk.END, f"\n>>> {command.strip()}\n{result}\n")
+                    output_area.see(tk.END)
                     output_area.config(state="disabled")
+
+                # Завершаем и применяем изменения
+                output_area.config(state="normal")
+                output_area.insert(tk.END, "Завершаем и применяем изменения...\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
+
+                # Последовательность команд "end", "commit", "confirm"
+                end_result = connection.send_command("end", expect_string=r"#", read_timeout=30)
+                commit_result = connection.send_command("commit", expect_string=r"#", read_timeout=30)
+                confirm_result = connection.send_command("confirm", expect_string=r"#", read_timeout=30)
+
+                # Отображаем результаты
+                output_area.config(state="normal")
+                output_area.insert(tk.END, f"Результат end:\n{end_result}\n")
+                output_area.insert(tk.END, f"Результат commit:\n{commit_result}\n")
+                output_area.insert(tk.END, f"Результат confirm:\n{confirm_result}\n")
+                output_area.insert(tk.END, "Настройки успешно применены!\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
 
                 connection.disconnect()
 
-                # Выводим сообщение о закрытии соединения
                 output_area.config(state="normal")
                 output_area.insert(tk.END, "\nСоединение закрыто.\n")
+                output_area.see(tk.END)
                 output_area.config(state="disabled")
 
             except NetmikoTimeoutException as e:
-                # Ошибка подключения: тайм-аут
                 output_area.config(state="normal")
-                output_area.insert(tk.END, f"\nОшибка подключения к {device}: Тайм-аут при подключении. {e}\n")
+                output_area.insert(tk.END, f"\nОшибка подключения к {device}: Тайм-аут. {e}\n")
+                output_area.see(tk.END)
                 output_area.config(state="disabled")
-
             except NetmikoAuthenticationException as e:
-                # Ошибка подключения: неверный логин/пароль
                 output_area.config(state="normal")
                 output_area.insert(tk.END, f"\nОшибка подключения к {device}: Ошибка аутентификации. {e}\n")
+                output_area.see(tk.END)
                 output_area.config(state="disabled")
-
             except ConnectionException as e:
-                # Общая ошибка подключения
                 output_area.config(state="normal")
                 output_area.insert(tk.END, f"\nОшибка подключения к {device}: {e}\n")
+                output_area.see(tk.END)
                 output_area.config(state="disabled")
-
             except Exception as e:
-                # Общая ошибка
                 output_area.config(state="normal")
                 output_area.insert(tk.END, f"\nОшибка: {e}\n")
+                output_area.see(tk.END)
                 output_area.config(state="disabled")
 
-            # Прокрутка до конца
-            output_area.see(tk.END)
-
-        # Выполнение команд в отдельном потоке
         threading.Thread(target=execute).start()
 
 
@@ -243,4 +298,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = ConfigApp(root)
     root.mainloop()
-
