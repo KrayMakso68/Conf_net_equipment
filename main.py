@@ -2,29 +2,28 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 import re
 
-from netmiko import ConnectHandler, NetmikoTimeoutException, NetmikoAuthenticationException, ConnectionException
+from netmiko import ConnectHandler, NetmikoTimeoutException, NetmikoAuthenticationException, ConnectionException, logging
 import threading
 
 # Настройки подключения по умолчанию для ESR и MES
+# TODO: с помощью библиотеки netmiko можно подключаться к разным типам устройств просто указав его правильную конфигурацию подключения и тип устройства
+
 settings = {
     "ESR": {
         "host": "192.168.1.1",
         "username": "admin",
         "password": "admin",
-        "secret": "",
         "device_type": "eltex_esr_ssh",  # Для ESR (SSH)
     },
     "MES": {
         "host": "192.168.1.239",
         "username": "admin",
         "password": "admin",
-        "secret": "",
-        "device_type": "generic_termserver_telnet",  # Для MES (Telnet)
+        "device_type": "eltex_esr_ssh",  # Для MES (SSH)
     },
 }
 
 
-# Основное окно
 class ConfigApp:
     def __init__(self, root):
         self.root = root
@@ -86,22 +85,18 @@ class ConfigApp:
         self.create_connection_inputs(settings_window, "MES", 7)
 
         def save_settings():
-            # Сохранение настроек подключения
             for device in ["ESR", "MES"]:
                 # Валидация значений
                 if not self.validate_inputs(self.inputs[device]):
                     return
 
-                # Сохранение настроек
                 settings[device]["host"] = self.inputs[device]["host"].get()
                 settings[device]["username"] = self.inputs[device]["username"].get()
                 settings[device]["password"] = self.inputs[device]["password"].get()
-                settings[device]["secret"] = self.inputs[device]["secret"].get()
 
             settings_window.destroy()
             messagebox.showinfo("Успех", "Настройки подключения сохранены!")
 
-        # Кнопка сохранения
         tk.Button(settings_window, text="Сохранить", command=save_settings).grid(row=12, column=0, columnspan=2,
                                                                                  pady=10)
 
@@ -120,31 +115,21 @@ class ConfigApp:
         create_input("IP-адрес", "host", start_row)
         create_input("Логин", "username", start_row + 1)
         create_input("Пароль", "password", start_row + 2)
-        create_input("Секрет", "secret", start_row + 3)
 
     def validate_inputs(self, inputs):
-        # Проверка IP-адреса
         ip = inputs["host"].get()
         if not re.match(r"^(?:\d{1,3}\.){3}\d{1,3}$", ip) or not all(0 <= int(octet) <= 255 for octet in ip.split(".")):
             messagebox.showerror("Ошибка", f"Некорректный IP-адрес: {ip}")
             return False
 
-        # Проверка логина
         username = inputs["username"].get()
         if not username.strip():
             messagebox.showerror("Ошибка", "Логин не может быть пустым.")
             return False
 
-        # Проверка пароля
         password = inputs["password"].get()
         if not password.strip():
             messagebox.showerror("Ошибка", "Пароль не может быть пустым.")
-            return False
-
-        # Проверка секрета (если указан)
-        secret = inputs["secret"].get()
-        if secret and len(secret) < 3:
-            messagebox.showerror("Ошибка", "Секрет должен содержать не менее 3 символов.")
             return False
 
         return True
@@ -153,14 +138,9 @@ class ConfigApp:
         try:
             with open(config_file, "r") as file:
                 commands = file.readlines()
-            self.run_commands(device, commands)
+            self.run_config_commands(device, commands)
         except FileNotFoundError:
             messagebox.showerror("Ошибка", f"Файл конфигурации {config_file} не найден.")
-
-    def factory_reset(self, device):
-        # Команда сброса к заводским настройкам
-        factory_command = ["end", "cop system:fa system:ca"]
-        self.run_commands(device, factory_command)
 
     def upload_config(self, device):
         # Загрузка пользовательской конфигурации
@@ -170,11 +150,11 @@ class ConfigApp:
             try:
                 with open(file_path, "r") as file:
                     commands = file.readlines()
-                self.run_commands(device, commands)
+                self.run_config_commands(device, commands)
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось загрузить конфигурацию: {e}")
 
-    def run_commands(self, device, commands):
+    def run_config_commands(self, device, commands):
         def execute():
             output_window = tk.Toplevel(self.root)
             output_window.title("Результаты выполнения")
@@ -189,7 +169,6 @@ class ConfigApp:
                 # Устанавливаем корректный ожидаемый шаблон для режима конфигурации
                 config_prompt = r"(config)#" if device == "MES" else r"(config)"
 
-                # Обработка ESR
                 if device == "ESR":
                     output_area.config(state="normal")
                     output_area.insert(tk.END, f"Подключение к {conn_params['host']} (ESR)...\n")
@@ -197,6 +176,7 @@ class ConfigApp:
                     output_area.config(state="disabled")
 
                     # # Проверяем, требуется ли смена пароля
+                    # # Редкий случай, появляется при сбросе к заводским без перезагрузки устройства, или при reset кнопкой сброса устройства
                     # prompt = connection.find_prompt()
                     # if "change-expired-password" in prompt:
                     #     output_area.config(state="normal")
@@ -216,7 +196,6 @@ class ConfigApp:
 
                     connection.config_mode(config_command="configure terminal", pattern=r"#")
 
-                # Обработка MES
                 elif device == "MES":
 
                     output_area.config(state="normal")
@@ -224,19 +203,113 @@ class ConfigApp:
                     output_area.see(tk.END)
                     output_area.config(state="disabled")
 
-                    # Ожидаем "User Name:" и "Password:"
-                    connection.telnet_login(
-                        username=conn_params["username"],
-                        password=conn_params["password"],
-                        read_timeout=15,
-                        expect_string=r"console#"
-                    )
-                    # Переход в режим конфигурации
-                    connection.config_mode(config_command="configure", pattern=config_prompt)
+                    # # Ожидаем "User Name:" и "Password:"
+                    # # TODO: аутентификация не проходит no telnet!
+                    # connection.telnet_login(
+                    #     username=conn_params["username"],
+                    #     password=conn_params["password"],
+                    #     read_timeout=15
+                    # )
+
+                    # connection.read_until_pattern("User Name:")
+                    # connection.write_channel(conn_params["username"]+"\r\n")
+                    # connection.read_until_pattern("Password:")
+                    # connection.write_channel(conn_params["password"] + "\r\n")
+
+                    connection.config_mode(config_command="configure terminal", pattern=r"#")
 
                 # Выполнение команд
                 for command in commands:
-                    result = connection.send_command(command.strip(), expect_string=r"#", read_timeout=30)
+                    result = connection.send_command(command.strip(), expect_string=r"", read_timeout=30)
+                    output_area.config(state="normal")
+                    output_area.insert(tk.END, f"\n>>> {command.strip()}\n{result}\n")
+                    output_area.see(tk.END)
+                    output_area.config(state="disabled")
+
+                output_area.config(state="normal")
+                output_area.insert(tk.END, "Завершаем и применяем изменения...\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
+
+                end_result = connection.send_command("end", expect_string=r"#", read_timeout=30)
+                commit_result = connection.send_command("commit", expect_string=r"#", read_timeout=30)
+                confirm_result = connection.send_command("confirm", expect_string=r"#", read_timeout=30)
+
+                output_area.config(state="normal")
+                output_area.insert(tk.END, f"Результат end:\n{end_result}\n")
+                output_area.insert(tk.END, f"Результат commit:\n{commit_result}\n")
+                output_area.insert(tk.END, f"Результат confirm:\n{confirm_result}\n")
+                output_area.insert(tk.END, "Настройки успешно применены!\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
+
+                connection.disconnect()
+
+                output_area.config(state="normal")
+                output_area.insert(tk.END, "\nСоединение закрыто.\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
+
+            except NetmikoTimeoutException as e:
+                output_area.config(state="normal")
+                output_area.insert(tk.END, f"\nОшибка подключения к {device}: Тайм-аут. {e}\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
+            except NetmikoAuthenticationException as e:
+                output_area.config(state="normal")
+                output_area.insert(tk.END, f"\nОшибка подключения к {device}: Ошибка аутентификации. {e}\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
+            except ConnectionException as e:
+                output_area.config(state="normal")
+                output_area.insert(tk.END, f"\nОшибка подключения к {device}: {e}\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
+            except Exception as e:
+                output_area.config(state="normal")
+                output_area.insert(tk.END, f"\nОшибка: {e}\n")
+                output_area.see(tk.END)
+                output_area.config(state="disabled")
+
+        threading.Thread(target=execute).start()
+
+    def factory_reset(self, device):
+        factory_commands = ["cop system:fa system:ca", "rel sys", "y"]
+
+        def execute():
+            output_window = tk.Toplevel(self.root)
+            output_window.title("Результаты выполнения")
+
+            output_area = scrolledtext.ScrolledText(output_window, width=80, height=20, state="disabled")
+            output_area.pack(padx=10, pady=10)
+
+            try:
+                conn_params = settings[device]
+                connection = ConnectHandler(**conn_params)
+
+                if device == "ESR":
+                    output_area.config(state="normal")
+                    output_area.insert(tk.END, f"Подключение к {conn_params['host']} (ESR)...\n")
+                    output_area.see(tk.END)
+                    output_area.config(state="disabled")
+
+                elif device == "MES":
+                    output_area.config(state="normal")
+                    output_area.insert(tk.END, f"Подключение к {conn_params['host']} (MES)...\n")
+                    output_area.see(tk.END)
+                    output_area.config(state="disabled")
+
+                    # # Ожидаем "User Name:" и "Password:"
+                    # connection.telnet_login(
+                    #     username=conn_params["username"],
+                    #     password=conn_params["password"],
+                    #     read_timeout=15,
+                    #     expect_string=r"console#"
+                    # )
+
+                # Выполнение команд
+                for command in factory_commands:
+                    result = connection.send_command(command.strip(), expect_string=r"", read_timeout=10)
                     output_area.config(state="normal")
                     output_area.insert(tk.END, f"\n>>> {command.strip()}\n{result}\n")
                     output_area.see(tk.END)
@@ -244,21 +317,7 @@ class ConfigApp:
 
                 # Завершаем и применяем изменения
                 output_area.config(state="normal")
-                output_area.insert(tk.END, "Завершаем и применяем изменения...\n")
-                output_area.see(tk.END)
-                output_area.config(state="disabled")
-
-                # Последовательность команд "end", "commit", "confirm"
-                end_result = connection.send_command("end", expect_string=r"#", read_timeout=30)
-                commit_result = connection.send_command("commit", expect_string=r"#", read_timeout=30)
-                confirm_result = connection.send_command("confirm", expect_string=r"#", read_timeout=30)
-
-                # Отображаем результаты
-                output_area.config(state="normal")
-                output_area.insert(tk.END, f"Результат end:\n{end_result}\n")
-                output_area.insert(tk.END, f"Результат commit:\n{commit_result}\n")
-                output_area.insert(tk.END, f"Результат confirm:\n{confirm_result}\n")
-                output_area.insert(tk.END, "Настройки успешно применены!\n")
+                output_area.insert(tk.END, "Завершаем изменения...\n Перезагрузка устройства...")
                 output_area.see(tk.END)
                 output_area.config(state="disabled")
 
